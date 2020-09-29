@@ -1,7 +1,7 @@
-import time
-
 import logging
 import re
+import time
+from binascii import hexlify
 from uuid import uuid4
 
 from streamlink.compat import quote
@@ -13,7 +13,9 @@ log = logging.getLogger(__name__)
 
 
 class BTSports(Plugin):
-    url_re = re.compile(r"https?://sport\.bt\.com")
+    url_re = re.compile(r"""https?://
+        (?:sport\.bt\.com|(?:www\.)?bt\.com/sport/watch/)
+    """, re.VERBOSE)
 
     arguments = PluginArguments(
         PluginArgument(
@@ -39,7 +41,7 @@ class BTSports(Plugin):
     saml_re = re.compile(r'''name="SAMLResponse" value="(.*?)"''', re.M | re.DOTALL)
     api_url = "https://be.avs.bt.com/AVS/besc"
     saml_url = "https://samlfed.bt.com/sportgetfedwebhls"
-    login_url = "https://signin1.bt.com/siteminderagent/forms/login.fcc"
+    login_url = "https://signin1.bt.com/siteminderagent/fcc/shim.fcc"
 
     def __init__(self, url):
         super(BTSports, self).__init__(url)
@@ -63,28 +65,42 @@ class BTSports(Plugin):
             "smauthreason": "0",
             "TARGET": redirect_to,
             "USER": username,
-            "PASSWORD": password}
+            "NAFMPASSWORD": password,
+            "PASSWORD": "{{\"Password\":\"{0}\"}}".format(
+                hexlify(password.encode("utf-8")).decode("utf-8"),
+            ),
+        }
         res = self.session.http.post(self.login_url, data=data)
 
         log.debug("Redirected to: {0}".format(res.url))
 
         if "loginerror" not in res.text:
-            self.logger.debug("Login successful, getting SAML token")
-            res = self.session.http.get("https://samlfed.bt.com/sportgetfedwebhls?bt.cid={0}".format(self.acid()))
+            log.debug("Login successful, getting SAML token")
+            res = self.session.http.get(
+                "https://samlfed.bt.com/sportgetfedwebhls?bt.cid={0}".format(
+                    self.acid(),
+                ),
+            )
             d = self.saml_re.search(res.text)
             if d:
                 saml_data = d.group(1)
-                self.logger.debug("BT Sports federated login...")
+                log.debug("BT Sports federated login...")
                 res = self.session.http.post(
                     self.api_url,
-                    params={"action": "LoginBT", "channel": "WEBHLS", "bt.cid": self.acid},
-                    data={"SAMLResponse": saml_data}
+                    params={
+                        "action": "LoginBT",
+                        "channel": "WEBHLS",
+                        "bt.cid": self.acid,
+                    },
+                    data={"SAMLResponse": saml_data},
                 )
                 fed_json = self.session.http.json(res)
                 success = fed_json['resultCode'] == "OK"
                 if not success:
-                    self.logger.error("Failed to login: {0} - {1}".format(fed_json['errorDescription'],
-                                                                          fed_json['message']))
+                    log.error("Failed to login: {0} - {1}".format(
+                        fed_json['errorDescription'],
+                        fed_json['message']
+                    ))
                 return success
         else:
             return False
@@ -95,7 +111,9 @@ class BTSports(Plugin):
         return device_id
 
     def acid(self):
-        acid = self.cache.get("acid") or "{cid}-B-{timestamp}".format(cid=self.device_id(), timestamp=int(time.time()))
+        acid = self.cache.get("acid") or "{cid}-B-{timestamp}".format(
+            cid=self.device_id(), timestamp=int(time.time())
+        )
         self.cache.set("acid", acid)
         return acid
 
@@ -108,7 +126,9 @@ class BTSports(Plugin):
              "bt.cid": self.acid(),
              "_": int(time.time())}
 
-        res = self.session.http.get(self.api_url, params=d, headers={"Accept": "application/json"})
+        res = self.session.http.get(
+            self.api_url, params=d, headers={"Accept": "application/json"}
+        )
         return self.session.http.json(res)
 
     def _get_streams(self):
@@ -123,10 +143,14 @@ class BTSports(Plugin):
                     data = self._get_cdn(info.get("ID"), info.get("TYPE"))
                     log.debug("CDN respsonse: {0}".format(data))
                     if data['resultCode'] == 'OK':
-                        return HLSStream.parse_variant_playlist(self.session, data['resultObj']['src'])
+                        return HLSStream.parse_variant_playlist(
+                            self.session, data['resultObj']['src']
+                        )
                     else:
-                        log.error("Failed to get stream with error: {0} - {1}".format(data['errorDescription'],
-                                                                                      data['message']))
+                        log.error("Failed to get stream with error: {0} - {1}".format(
+                            data['errorDescription'],
+                            data['message'],
+                        ))
             else:
                 log.error("Login failed.")
         else:
