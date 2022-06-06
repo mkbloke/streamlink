@@ -504,12 +504,16 @@ class MuxedHLSStream(MuxedStream):
                 tracks.append(audio)
         for i in range(1, len(tracks)):
             maps.append("{0}:a".format(i))
-        substreams = map(lambda url: HLSStream(session, url, force_restart=force_restart, **args), tracks)
+        substreams = map(lambda url: self._create_substream(session, url, force_restart=force_restart, **args), tracks)
         ffmpeg_options = ffmpeg_options or {}
 
         super().__init__(session, *substreams, format="mpegts", maps=maps, **ffmpeg_options)
         self.url_master = url_master
         self.multivariant = multivariant if multivariant and multivariant.is_master else None
+
+    @staticmethod
+    def _create_substream(session, url: str, force_restart: bool = False, **args):
+        return HLSStream(session, url, force_restart=force_restart, **args)
 
     def to_manifest_url(self):
         url = self.multivariant.uri if self.multivariant and self.multivariant.uri else self.url_master
@@ -598,6 +602,28 @@ class HLSStream(HTTPStream):
     @classmethod
     def _get_variant_playlist(cls, *args, **kwargs):
         return load_hls_playlist(*args, **kwargs)
+
+    @classmethod
+    def _create_muxed_hls_stream(
+        cls,
+        session_,
+        video,
+        audio,
+        multivariant=None,
+        force_restart: bool = False,
+        start_offset: float = 0,
+        duration: Optional[float] = None,
+        **request_params
+    ):
+        return MuxedHLSStream(
+            session_,
+            video,
+            audio,
+            multivariant=multivariant,
+            force_restart=force_restart,
+            duration=duration,
+            **request_params
+        )
 
     @classmethod
     def parse_variant_playlist(
@@ -742,7 +768,7 @@ class HLSStream(HTTPStream):
                 ])
                 log.debug(f"Using external audio tracks for stream {stream_name} {external_audio_msg}")
 
-                stream = MuxedHLSStream(
+                stream = cls._create_muxed_hls_stream(
                     session_,
                     video=playlist.uri,
                     audio=[x.uri for x in external_audio if x.uri],
